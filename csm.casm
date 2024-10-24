@@ -1,0 +1,830 @@
+CoreASM csm
+
+use StandardPlugins
+
+// For "enqueue", "dequeue"
+use Queue
+// For "sum"
+use MathPlugin
+
+//-------------------------------------ASM INPUT-------------------------------------
+
+/* SMART FACTORY USE CASE */
+derived initialPersistentData = {"productsCompleted" -> 0, "jobDone" -> false, "log" -> []}
+derived stateMachines = [
+  
+  [
+    "jobControlSystem", 
+    [
+      
+      [
+        "starting", true, false, [], [[[], "running", [], undef, undef]], [[acMatch, [[[["productsCompleted"], ">=", ["totalProducts"]], "||", ["jobDone"]], [[[true], [acAssign, ["productsCompleted", [0]]]]]]], [acAssign, ["jobDone", [false]]], [acRaise, ["eProcessMessage", global, [["msg", ["Job started"]]]]]], [], [], [], {->}, {->}
+      ], 
+      [
+        "running", false, false, [[[], undef, [[acAssign, ["productsCompleted", [["productsCompleted"], "+", [1]]]], [acRaise, ["eCheckJobDone", internal, []]]], "eProductComplete", undef], [[[["productsCompleted"], ">=", ["totalProducts"]]], "jobDone", [], "eCheckJobDone", undef]], [], [], [], [], [], {->}, {->}
+      ], 
+      [
+        "jobDone", false, true, [], [], [[acAssign, ["jobDone", [true]]], [acRaise, ["eJobDone", global, []]]], [], [], [], {->}, {->}
+      ]
+    ],
+    [
+
+    ],
+    {"totalProducts"->2}
+  ],
+  [
+    "conveyorBeltSystem",
+    [
+
+      [
+        "loading", 
+        true, 
+        false, 
+        [[[], "error", [], "eObjectInvalid", undef], [[], "transporting", [], "eObjectValid", undef], [[], "jobDone", [], "eJobDone", undef]], 
+        [], 
+        [], 
+        [[acRaise, ["eScanned", global, []]]], 
+        [], 
+        [], 
+        {->}, 
+        {->}
+      ],
+      [
+        "error", false, false, [[[], "transporting", [], "eObjectValid", undef], [[], "jobDone", [], "eJobDone", undef]], [], [[acRaise, ["eProcessMessage", global, [["msg", ["Invalid"]]]]]], [], [], [], {->}, {->}
+      ],
+      [
+        "transporting", false, false, [[[], "unloading", [[acAssign, ["isUnloading", [true]]]], "eStartUnload", undef], [[], "jobDone", [], "eJobDone", undef]], [], [[acInvoke, ["moveBelt", false, [], [], []]]], [[acInvoke, ["stopBelt", false, [], [], []]]], [], [], {->}, {->}
+      ],
+      [
+        "unloading", false, false, [[[], "loading", [[acAssign, ["isUnloading", [false]]]], "ePickedUp", undef], [[], "jobDone", [[acAssign, ["isUnloading", [false]]]], "eJobDone", undef]], [], [[acRaise, ["eArmPickup", global, []]]], [], [], [[acTimeout, ["conveyorBeltSystem.triggerPickup", 10, [acRaise, ["eArmPickup", global, []]]]]], {->}, {->}
+      ],
+      [
+        "jobDone", false, true, [], [], [], [], [], [], {->}, {->}
+      ]
+    ],
+    [
+
+      [
+        "cameraSensorSystem", 
+        [
+        	["idle", true, false, [[[], "scanning", [[acAssign, ["isScanning", [true]]]], "eStartScan", undef]], [], [], [], [], [], {->}, {->}], 
+        	["scanning", false, false, [[[], "idle", [[acMatch, [["validObject"], [[[false], [acRaise, ["eObjectInvalid", global, []]]], [[true], [acRaise, ["eObjectValid", global, []]]]]]]], "eCheckValidObject", undef]], [], [[acInvoke, ["takePhoto", false, [], [], []]], [acInvoke, ["scanPhoto", false, [], [["eCheckValidObject", internal, []]], ["validObject"]]]], [[acAssign, ["isScanning", [false]]]], [], [], {->}, {->}]], 
+        	[], 
+        	{"validObject"->false, "photoPath"->""}   
+      ],
+      [
+        "photoelectricSensorStart", [["idle", true, false, [[[[["!", ["isUnloading"]], "&&", ["!", ["isScanning"]]]], "detecting", [], "eBeamDetection", undef]], [], [], [], [], [[acTimeout, ["photoelectricSensorStart.triggerBeamDetection", 10, [acRaise, ["eBeamDetection", internal, []]]]]], {->}, {->}], ["detecting", false, false, [[[["isBeamInterrupted"]], "detected", [], "eCheckBeamDetection", "idle"]], [], [[acInvoke, ["beamDetectionStart", false, [], [["eCheckBeamDetection", internal, []]], ["isBeamInterrupted"]]]], [], [], [], {->}, {->}], ["detected", false, false, [], [[[], "idle", [[acAssign, ["isBeamInterrupted", [false]]]], undef, undef]], [[acRaise, ["eStartScan", global, []]]], [], [], [], {->}, {->}]], [], {"isBeamInterrupted"->false}
+      ],
+      [
+        "photoelectricSensorEnd", [["idle", true, false, [[[["!", ["isUnloading"]]], "detecting", [], "eBeamDetection", undef]], [], [], [], [], [[acTimeout, ["photoelectricSensorEnd.triggerBeamDetection", 10, [acRaise, ["eBeamDetection", internal, []]]]]], {->}, {->}], ["detecting", false, false, [[[["isBeamInterrupted"]], "detected", [], "eCheckBeamDetection", "idle"]], [], [[acInvoke, ["beamDetectionEnd", false, [], [["eCheckBeamDetection", internal, []]], ["isBeamInterrupted"]]]], [], [], [], {->}, {->}], ["detected", false, false, [], [[[], "idle", [[acAssign, ["isBeamInterrupted", [false]]]], undef, undef]], [[acRaise, ["eStartUnload", global, []]]], [], [], [], {->}, {->}]], [], {"isBeamInterrupted"->false}
+      ]
+    ],
+    {"isScanning"->false, "isUnloading"->false}
+  ],
+  [
+    "roboticArmSystem",
+    [
+
+      [
+        "idle", true, false, [[[["!", ["jobDone"]]], "pickup", [], "eArmPickup", undef], [[], "jobDone", [], "eJobDone", undef]], [[[["!", ["pickUpSuccess"]]], "pickup", [], undef, undef]], [], [], [], [], {->}, {->}
+      ],
+      [
+        "error", false, false, [[[["pickUpSuccess"]], "assemble", [], "eRetry", "return"], [[], "jobDone", [], "eJobDone", undef]], [], [[acRaise, ["eProcessMessage", global, [["msg", ["Fatal"]]]]]], [], [], [[acTimeout, ["roboticArmSystem.retry", 100, [acRaise, ["eRetry", internal, []]]]]], {->}, {->}
+      ],
+      [
+        "pickup", false, false, [[[["pickUpSuccess"]], "assemble", [[acRaise, ["ePickedUp", global, []]]], "eCheckPickUpSuccess", "error"]], [], [[acInvoke, ["pickUp", false, [], [], ["pickUpSuccess"]]], [acMatch, [["pickUpSuccess"], [[[false], [acAssign, ["errorMsg", ["Pickup"]]]]]]], [acRaise, ["eCheckPickUpSuccess", internal, []]]], [], [], [], {->}, {->}
+      ],
+      [
+        "assemble", false, false, [[[["assembleSuccess"]], "return", [[acAssign, ["partsAssembled", [["partsAssembled"], "+", [1]]]], [acRaise, ["eAssembleComplete", global, []]]], "eCheckAssembleSuccess", "error"]], [], [[acInvoke, ["assemble", false, [], [], ["assembleSuccess"]]], [acMatch, [["assembleSuccess"], [[[false], [acAssign, ["errorMsg", ["Assemble"]]]]]]], [acRaise, ["eCheckAssembleSuccess", internal, []]]], [], [], [], {->}, {->}
+      ],
+      [
+        "return", false, false, [], [[[[["partsAssembled"], ">=", ["partsPerProduct"]]], "idle", [[acAssign, ["partsAssembled", [0]]], [acRaise, ["eProductComplete", global, []]]], undef, "idle"]], [[acInvoke, ["returnToStart", false, [], [], []]]], [], [], [], {->}, {->}
+      ],
+      [
+        "jobDone", false, true, [], [], [], [], [], [], {->}, {->}
+      ]
+    ],
+    [
+
+    ],
+    {"pickUpSuccess"->true, "assembleSuccess"->true, "partsAssembled"->0, "partsPerProduct"->2, "errorMsg"->""}
+  ],
+  [
+    "eMailProcessor",
+    [
+
+      [
+        "idle", true, false, [[[], "process", [], "eProcessMessage", undef], [[], "jobDone", [], "eJobDone", undef]], [], [], [], [], [], {->}, {->}
+      ],
+      [
+        "process", false, false, [], [[[], "idle", [], undef, undef]], [[acInvoke, ["sendMail", false, [["mailBody", ["msg"]]], [], []]]], [], [], [], {->}, {->}
+      ],
+      [
+        "jobDone", false, true, [], [], [], [], [], [], {->}, {->}
+      ]
+    ],
+    [
+
+    ],
+    {->}
+  ],
+  [
+    "smsProcessor",
+    [
+
+      [
+        "idle", true, false, [[[], "process", [], "eProcessMessage", undef], [[], "jobDone", [], "eJobDone", undef]], [], [], [], [], [], {->}, {->}
+      ],
+      [
+        "process", false, false, [], [[[], "idle", [], undef, undef]], [[acInvoke, ["sendSms", false, [["smsText", ["msg"]]], [], []]]], [], [], [], {->}, {->}
+      ],
+      [
+        "jobDone", false, true, [], [], [], [], [], [], {->}, {->}
+      ]
+    ],
+    [
+
+    ],
+    {->}
+  ],
+  [
+    "logProcessor",
+    [
+
+      [
+        "idle", true, false, [[[], "process", [], "eProcessMessage", undef], [[], "jobDone", [], "eJobDone", undef]], [], [], [], [], [], {->}, {->}
+      ],
+      [
+        "process", false, false, [], [[[], "idle", [], undef, undef]], [[acAssign, ["log", ["var"]]]], [], [], [], {->}, {->}
+      ],
+      [
+        "jobDone", false, true, [], [], [], [], [], [], {->}, {->}
+      ]
+    ],
+    [
+
+    ],
+    {->}
+  ],
+  [
+    "monitoringSystem",
+    [
+
+      [
+        "monitoring", true, false, [[[], undef, [[acAssign, ["nScans", [["nScans"], "+", [1]]]], [acInvoke, ["sendStatistics", false, [["nScans", ["nScans"]], ["nAssemblies", ["nAssemblies"]], ["nProductsCompleted", ["productsCompleted"]], ["jobDone", ["jobDone"]]], [], []]]], "eScanned", undef], [[], undef, [[acAssign, ["nAssemblies", [["nAssemblies"], "+", [1]]]], [acInvoke, ["sendStatistics", false, [["nScans", ["nScans"]], ["nAssemblies", ["nAssemblies"]], ["nProductsCompleted", ["productsCompleted"]], ["jobDone", ["jobDone"]]], [], []]]], "eAssembleComplete", undef], [[], "jobDone", [], "eJobDone", undef]], [[[["jobDone"]], "jobDone", [], undef, undef]], [], [], [], [], {->}, {->}
+      ],
+      [
+        "jobDone", false, true, [], [], [[acInvoke, ["sendStatistics", false, [["nScans", ["nScans"]], ["nAssemblies", ["nAssemblies"]], ["nProductsCompleted", ["productsCompleted"]], ["jobDone", ["jobDone"]]], [], []]]], [], [], [], {->}, {->}
+      ]
+    ],
+    [
+
+    ],
+    {"nScans"->0, "nAssemblies"->0}
+  ]
+]
+
+// Service simulation
+derived services = {
+	"moveBelt" -> [],
+	"stopBelt" -> [],
+	"takePhoto" -> [["photoPath", ["test.png"]]],
+	"scanPhoto" -> [["validObject", [true]]], //pick b in [true, true, true, true, true, false],
+	"beamDetectionStart" -> [["isBeamInterrupted", [beltIsMoving() = false]]],
+	"beamDetectionEnd" -> [["isBeamInterrupted", [beltIsMoving() = true]]],
+	"pickUp" -> [["pickUpSuccess", [true]]],
+	"assemble" -> [["assembleSuccess", [true]]],
+	"returnToStart" -> [],
+	"sendMail" -> [],
+	"sendSms" -> [],
+	"sendStatistics" -> []
+}
+
+function beltIsMoving: -> BOOLEAN
+
+
+/* SURVEILLANCE SYSTEM
+derived initialPersistentData = {->}
+derived stateMachines = [
+
+  [
+    "detector",
+    [
+
+      [
+        "capturing", true, false, [[[], "processing", [], "captured", undef]], [], [[acInvoke, ["cameraCapture", false, [["cameraId", [0]]], [["captured", internal, []]], ["image"]]]], [], [], [], {->}, {->}
+      ],
+      [
+        "processing", false, false, [[[[["hasDetectedPersons"], "==", [true]]], undef, [[acRaise, ["foundPersons", global, [["image", ["image"]]]]]], "detectedPersons", undef], [[], "alarm", [], "timeout", undef]], [], [[acInvoke, ["detectPersons", true, [["image", ["image"]]], [["detectedPersons", internal, []]], ["hasDetectedPersons"]]]], [], [], [[acTimeout, ["captureTimeout", 5, [acRaise, ["timeout", internal, []]]]]], {->}, {->}
+      ],
+      [
+        "alarm", false, false, [[[], "capturing", [], "disarm", undef]], [], [[acInvoke, ["alarmOn", false, [], [], []]]], [[acInvoke, ["alarmOff", false, [], [], []]]], [], [[acTimeout, ["disarmTimeout", 5, [acRaise, ["disarm", internal, []]]]]], {->}, {->}
+      ]
+    ],
+    [
+
+    ],
+    {"image"->"", "hasDetectedPersons"->false}
+  ],
+  [
+    "surveillance",
+    [
+
+      [
+        "processing", true, false, [[[], undef, [[acInvoke, ["analyze", false, [["image", ["image"]]], [["analyzed", internal, []]], ["hasThreat"]]]], "foundPersons", undef], [[[["hasThreat"], "==", [true]]], undef, [[acRaise, ["alarm", global, []]]], "analyzed", undef], [[], "alarm", [], "alarm", []]], [], [], [], [], [], {->}, {->}
+      ],
+      [
+        "alarm", false, false, [[[], "processing", [], "disarm", undef]], [], [], [], [], [[acTimeout, ["disarmTimeout", 10, [acRaise, ["disarm", global, []]]]]], {->}, {->}
+      ]
+    ],
+    [
+
+    ],
+    {"hasThreat"->false}
+  ]
+]
+
+derived services = {
+	"cameraCapture" -> [["image", ["12345"]]],
+	"detectPersons" -> [["hasDetectedPersons", [pick b in [true, false]]]],
+	"analyze" -> [["hasThreat", [pick b in [true, false]]]],
+	"alarmOn" -> [],
+	"alarmOff" -> [] 
+}
+*/
+
+//-------------------------------------SIGNATURE-------------------------------------
+
+// LIST of state machine inputs processed during each step. Each input is itself a LIST with elements: [InputType, [params...]]
+function inputQueue: Agents -> LIST
+
+// State machine name
+function name: Agents -> STRING
+
+// States: LIST of states. Each state is itself a LIST with elements 
+// [name, initial, terminal, on, always, entry, exit, while, after, localContext, staticContext].
+function states: Agents -> LIST
+function activeState: Agents -> LIST
+
+// LIST of state machines nested in the state machine
+function nestedStateMachines: Agents -> LIST
+
+// Context: context variables represented as a MAP of the form {key -> value}.
+function localContext: Agents -> MAP
+function persistentContext: -> MAP
+
+function localContextState: Agents * STRING -> MAP
+function staticContextState: Agents * STRING -> MAP
+
+// Timeout Queue: LIST of timeouts currently queued for processing. Each timeout is itself a LIST with elements 
+// [name, delayInSteps, action]
+function timeoutQueue: Agents -> LIST
+
+// Maps a state machine agent to its parent state machine agent (undef if the state machine is not nested)
+function parent: Agents -> Agents
+
+// ENUMS
+
+enum InputType = {handleEvent, handleTimeout, enterState, exitState, processAlways, executeAction, startTimeout}
+enum EventChannel = {internal, global}
+enum ActionType = {acInvoke, acRaise, acCreate, acAssign, acDelete, acTimeout, acReset, acMatch}
+
+
+//-------------------------------------DERIVED/HELPER FUNCTIONS-------------------------------------
+
+// INPUTS
+derived inputType(inp) = nth(inp,1)
+derived inputParams(inp) = nth(inp,2)
+
+// STATE MACHINE
+derived stateMachineName(sm) = nth(sm,1)
+derived stateMachineStates(sm) = nth(sm,2)
+derived stateMachineNested(sm) = nth(sm,3)
+derived stateMachineLocalContext(sm) = nth(sm,4)
+
+derived baseStateMachineCount = size(stateMachines)
+
+// Count all state machines (state machines + nested state machines)
+derived stateMachineCount =
+	baseStateMachineCount + nestedCount(baseStateMachineCount+1)
+
+// Count nested state machines of state machines until the given state machine index
+derived nestedCount(untilSm) =
+	if untilSm <= 1 then 0 
+	else sum({size(nestedStateMachines(i)) | i in [1..untilSm-1]})
+
+derived isTerminated(sm) =
+	return terminated in
+		if isTerminalState(activeState(sm)) then
+			terminated := true
+		// Has parent (is thus nested) and parent entered its initial state
+		else if parent(sm) != undef and activeState(parent(sm)) != undef then
+			terminated := isTerminated(parent(sm))
+		else
+			terminated := false
+
+// STATE
+derived stateName(s) = nth(s,1)
+derived isInitialState(s) = nth(s,2)
+derived isTerminalState(s) = nth(s,3)
+derived stateOn(s) = nth(s,4)
+derived stateAlways(s) = nth(s,5)
+derived stateEntry(s) = nth(s,6)
+derived stateExit(s) = nth(s,7)
+derived stateWhile(s) = nth(s,8)
+derived stateAfter(s) = nth(s,9)
+derived stateLocal(s) = nth(s,10)
+derived stateStatic(s) = nth(s,11)
+
+derived initialState =
+	pick s in states(self) with isInitialState(s)
+
+derived state(name) =
+	pick s in states(self) with stateName(s) = name
+
+derived activeStateName = stateName(activeState(self))
+
+// TRANSITION
+// Transitions: LIST with elements [event OR undef, guards, targetState OR undef, actions].
+// If event is undef then the transition is an always transition
+// If targetState is undef then transition is an internal transition
+derived transitionGuards(t) = nth(t, 1)
+derived transitionTarget(t) = nth(t, 2)
+derived transitionActions(t) = nth(t, 3)
+derived transitionEvent(t) = nth(t, 4)
+derived transitionElse(t) = nth(t, 5)
+
+derived isInternalTransition(t) = (transitionTarget(t) = undef)
+
+derived findOnTransitions(event) =
+	{t | t in stateOn(activeState(self)) with transitionEvent(t) = eventName(event)}
+
+// EVENT
+// Raised events are represented as LIST with elements [name, channel, [data...]]
+derived eventName(e) = nth(e, 1)
+derived eventChannel(e) = nth(e, 2)
+derived eventData(e) = nth(e, 3)
+
+// ACTION
+// Actions are represented as LIST with elements [type, [params...]]
+derived actionType(a) = nth(a, 1)
+derived actionParams(a) = nth(a, 2)
+
+// TIMEOUT
+derived timeoutName(t) = nth(t, 1)
+derived timeoutDelay(t) = nth(t, 2)
+derived timeoutAction(t) = nth(t, 3)
+
+derived getTimeout(name) =
+	pick t in timeoutQueue(self) with timeoutName(t) = name 
+
+// SERVICE
+derived serviceName(s) = nth(s,1)
+derived serviceLocal(s) = nth(s,2)
+derived serviceInput(s) = nth(s,3)
+derived serviceDone(s) = nth(s,4)
+derived serviceOutput(s) = nth(s,5)
+
+// DATA
+derived getVariableValue(sm, name, isStateScoped) =
+    return value in seq
+		if isStateScoped then
+            // Check state scope first
+            let stateLocalVar = localContextState(sm, activeStateName)(name),
+                stateStaticVar = staticContextState(sm, activeStateName)(name)
+            in
+                if stateLocalVar != undef then
+                    value := stateLocalVar
+                else if stateStaticVar != undef then
+                    value := stateStaticVar
+                endif
+        endif
+
+        // Check state machine scope
+        if value = undef then
+            if localContext(sm)(name) != undef then
+                value := localContext(sm)(name)
+            else if parent(sm) != undef then
+            	value := getVariableValue(parent(sm), name, false)
+            else if persistentContext()(name) != undef then
+                value := persistentContext()(name)
+            else
+            	value := undef
+            endif
+        endif
+	endseq
+
+// EXPRESSION (Expressions are limited to the operations below)	
+derived evaluateExpression(expression, isStateScoped) =
+	return res in seq
+		if size(expression) = 1 then
+			let keyOrConstant = nth(expression, 1) in
+				let value = getVariableValue(self, keyOrConstant, isStateScoped) in
+					if value = undef then
+						res := keyOrConstant							// Expression is a constant
+					else
+						res := value									// Expression is a variable
+					endif
+		else if size(expression) = 2 then
+			res := evaluateUnaryOperation(expression, isStateScoped) 	// Expression is an unary operation
+		else if size(expression) = 3 then
+			res := evaluateBinaryOperation(expression, isStateScoped)	// Expression is a binary operation
+		else par
+			smPrint("Invalid expression: " + expression)
+			res := undef
+		endpar endif
+	endseq
+
+derived evaluateUnaryOperation(expression, isStateScoped) =
+	return res in
+		let operator = nth(expression, 1),
+			operand = evaluateExpression(nth(expression, 2), isStateScoped) 
+		in
+			case operator of
+				"!": res := not operand
+				"-": res := -operand
+				"+": res := operand
+			endcase			
+
+derived evaluateBinaryOperation(expression, isStateScoped) =
+	return res in
+		let leftOperand = evaluateExpression(nth(expression, 1), isStateScoped), 
+			operator = nth(expression, 2), 
+			rightOperand = evaluateExpression(nth(expression, 3), isStateScoped)
+		in
+			case operator of
+				// Comparison
+				"==": res := leftOperand = rightOperand
+				"!=": res := leftOperand != rightOperand
+				"<" : res := leftOperand < rightOperand
+				"<=": res := leftOperand <= rightOperand
+				">" : res := leftOperand > rightOperand
+				">=": res := leftOperand >= rightOperand
+				// Logical
+				"&&": res := leftOperand and rightOperand
+				"||": res := leftOperand or rightOperand
+				// Arithmetic
+				"+" : res := leftOperand + rightOperand
+				"-" : res := leftOperand - rightOperand
+				"*" : res := leftOperand * rightOperand
+				"/" : res := leftOperand / rightOperand
+				"%" : res := leftOperand % rightOperand
+			endcase
+
+derived evaluateGuards(guards, isStateScoped) =
+	forall guard in guards holds evaluateExpression(guard, isStateScoped) = true
+
+//-------------------------------------INITIAL STATE-------------------------------------
+
+init Init
+
+rule Init =
+	seq
+		// Initialize persistent context
+		persistentContext() := initialPersistentData()
+		/* BEGIN SMART FACTORY SIMULATION */
+		beltIsMoving() := false
+		/* END SMART FACTORY SIMULATION */
+		
+		// Initialize state machines
+		forall i in [1..baseStateMachineCount] do
+			InitStateMachineAgent(i, nth(stateMachines, i), undef)
+		endforall
+		// Initialize nested state machines
+		forall i in [1..baseStateMachineCount] do 
+			InitNestedStateMachines(i)
+		endforall
+		// Exit InitAgent
+		program(self) := undef	
+	endseq
+
+rule InitStateMachineAgent(i, stateMachine, parentId) =
+	seq
+		// Enable agent (state machine)
+		Agents(i) := true
+		
+		// Initialize state machine
+		name(i) := stateMachineName(stateMachine)
+		states(i) := stateMachineStates(stateMachine)
+		nestedStateMachines(i) := stateMachineNested(stateMachine)
+		localContext(i) := stateMachineLocalContext(stateMachine)
+		timeoutQueue(i) := []
+		inputQueue(i) := []
+		parent(i) := parentId
+		
+		// Initialize state context
+		forall state in states(i) do par
+			localContextState(i, stateName(state)) := stateLocal(state)
+			staticContextState(i, stateName(state)) := stateStatic(state)
+		endpar endforall
+		
+		// Set state machine program
+		program(i) := @StateMachineStep
+		print("Initialized state machine: " + name(i) + " = Agent " + i)
+	endseq
+
+rule InitNestedStateMachines(i) =
+	// Initialize nested state machines. The agent index starts with baseStateMachineCount + 1.
+	if size(nestedStateMachines(i)) > 0 then
+		forall j in [1..size(nestedStateMachines(i))] do
+			InitStateMachineAgent(baseStateMachineCount + nestedCount(i) + j, nth(nestedStateMachines(i), j), i)
+		endforall
+	endif
+
+//-------------------------------------RULES-------------------------------------
+
+rule StateMachineStep =
+	seq
+		// At step 1, activeState is undef and we enter the initial state
+		if activeState(self) = undef then
+			inputQueue(self) := [[enterState, initialState]] + inputQueue(self)
+		
+		// Handle all active timeouts
+		forall timeout in timeoutQueue(self) do
+			add [handleTimeout, timeout] to inputQueue(self)
+		endforall
+		
+		// Handle input generated throughout this step or the steps of other state machines
+		while size(inputQueue(self)) > 0 do
+			local inp in seq
+				dequeue inp from inputQueue(self)
+				HandleInput(inp)
+			endseq
+			
+		// If the state machines' or parent state machines' active state is a terminal state, terminate the state machine
+		if isTerminated(self) then par
+			smPrint("State machine " + name(self) + " terminated.")
+			program(self) := undef
+		endpar endif
+	endseq
+
+rule HandleInput(inp) = 
+	let type = inputType(inp), params = inputParams(inp) in
+	case type of
+		handleEvent	  : HandleEvent(params)
+		handleTimeout : HandleTimeout(params)
+		enterState	  : EnterState(params)
+		exitState 	  : ExitState(params)
+		processAlways : ProcessAlwaysTransitions
+		executeAction : ExecuteAction(nth(params,1), nth(params,2) = true) 
+		startTimeout  : StartTimeout(params)
+	endcase
+
+rule HandleEvent(event) = 	
+	let onTransitions = findOnTransitions(event), data = eventData(event) in
+		if size(onTransitions) > 0 then seq
+			smPrint("Handling event: " + event)
+			
+			// Create event data variables
+			forall eventVar in data do
+				Create("$" + nth(eventVar, 1), nth(eventVar, 2), false, false)
+			endforall
+			
+			// Choose the first event-based transition where either the guards evaluate to true or an "else" target exists
+			choose transition in onTransitions 
+					with evaluateGuards(transitionGuards(transition), false) or transitionElse(transition) != undef do
+				// Take the chosen transition
+				DoTransition(transition, not evaluateGuards(transitionGuards(transition), false))
+			ifnone
+				// If no transition was chosen, delete event data
+				forall eventVar in data do
+					Delete(self, "$" + nth(eventVar, 1), false)
+				endforall
+			endchoose
+		endseq
+		
+rule HandleTimeout(timeout) =
+	let timeoutIndex = nth(indices(timeoutQueue(self), timeout), 1) in seq
+		// Reduce delay by 1
+		timeoutQueue(self) := setnth(
+			timeoutQueue(self), 
+			timeoutIndex, 
+			[timeoutName(timeout), timeoutDelay(timeout) - 1, timeoutAction(timeout)])
+		
+		// After delay reaches 0, execute the timeout action and remove the timeout
+		if timeoutDelay(timeout) - 1 <= 0 then seq
+			smPrint("Timeout triggered: " + timeout)
+			enqueue [executeAction, [timeoutAction(timeout), false]] into inputQueue(self)
+			ResetTimeout(timeoutName(timeout))
+		endseq endif 
+	endseq
+
+rule EnterState(state) =
+	seq
+		smPrint("Entering " + stateName(state))
+		activeState(self) := state
+		
+		GenerateActions(stateEntry(state), true)
+		GenerateActions(stateWhile(state), true)
+		GenerateTimeoutActions(stateAfter(state))
+		
+		if size(stateAlways(state)) > 0 then
+			enqueue [processAlways, undef] into inputQueue(self) 
+		endif
+	endseq
+
+rule ExitState(state) =
+	seq
+		smPrint("Exiting " + stateName(state))
+		
+		GenerateActions(stateExit(state), true)
+		
+		// Reset all timeouts
+		forall timeout in timeoutQueue(self) do
+			ResetTimeout(timeoutName(timeout))
+		endforall
+	endseq
+	
+rule ProcessAlwaysTransitions = 
+	let alwaysTransitions = stateAlways(activeState(self)) in seq
+		if size(alwaysTransitions) > 0 then
+			smPrint("Processing always transitions: " + alwaysTransitions)
+		endif
+		
+		// Choose the first "always" transition where either the guards evaluate to true or an "else" target exists
+		choose transition in alwaysTransitions with evaluateGuards(transitionGuards(transition), false) or transitionElse(transition) != undef do
+			// Take the chosen transition
+			DoTransition(transition, not evaluateGuards(transitionGuards(transition), false))
+		endchoose
+	endseq
+
+rule DoTransition(transition, isElse) =
+	seq
+		smPrint("Taking transition: " + transition)
+		let isInternal = isInternalTransition(transition) in seq
+			// If the transition is internal, do not exit/enter a state
+			if not isInternal then
+				enqueue [exitState, activeState(self)] into inputQueue(self)
+			endif
+			
+			// Only execute actions if the state machine is not meant to transition to the else target (= transition guards evaluated to true)
+			if not isElse then
+				GenerateActions(transitionActions(transition), false)
+			endif
+			
+			if not isInternal then
+				if isElse then
+					enqueue [enterState, state(transitionElse(transition))] into inputQueue(self)
+				else
+					enqueue [enterState, state(transitionTarget(transition))] into inputQueue(self)
+				endif
+			endif
+		endseq
+	endseq
+
+
+// Action rules
+
+rule GenerateActions(actions, isStateScoped) =
+	inputQueue(self) := inputQueue(self) + [[executeAction, [action, isStateScoped]] | action in actions]
+
+rule ExecuteAction(action, isStateScoped) =
+	let type = actionType(action), params = actionParams(action) in
+		case type of
+			acInvoke : InvokeService(params, isStateScoped)
+			acRaise	 : RaiseEvent(params)
+			acCreate : Create(nth(params, 1), nth(params, 2), nth(params, 3), isStateScoped)
+			acAssign : Assign(self, nth(params, 1), nth(params, 2), isStateScoped)
+			acDelete : Delete(self, nth(params, 1), isStateScoped)
+			acReset	 : ResetTimeout(nth(params, 1))
+			acMatch	 : Match(params, isStateScoped)
+		endcase
+
+rule GenerateTimeoutActions(actions) =
+	inputQueue(self) := inputQueue(self) + [
+		[startTimeout, actionParams(action)] | action in actions with actionType(action) = acTimeout
+	]
+
+rule InvokeService(service, isStateScoped) = 
+	seq
+		smPrint("Invoking service: " + service)
+		/* BEGIN SMART FACTORY SIMULATION */
+		if serviceName(service) = "moveBelt" then
+			beltIsMoving() := true
+		endif
+		if serviceName(service) = "stopBelt" then
+			beltIsMoving() := false
+		endif
+		/* END SMART FACTORY SIMULATION */
+		
+		// TODO We currently ignore service input
+		let serviceOut = services()(serviceName(service)) in
+			if serviceOut = undef then
+				smPrint("Unknown service " + service)
+			else seq
+				// Assign all service outputs
+				forall variableRef in serviceOutput(service) do
+					choose outputVar in serviceOut with nth(outputVar,1) = variableRef do
+						Assign(self, variableRef, nth(outputVar,2), isStateScoped)
+					endchoose	
+				endforall
+				// Raise all done events
+				forall doneEvent in serviceDone(service) do
+					RaiseEvent([eventName(doneEvent), eventChannel(doneEvent), serviceOut])
+				endforall
+			endseq
+	endseq
+	
+rule RaiseEvent(event) = 
+	seq
+		smPrint("Raise event: " + event)
+		if eventChannel(event) = internal then
+			// Internal events are handled by the state machine raising the event
+			enqueue [handleEvent, event] into inputQueue(self)
+		else
+			// Otherwise add the event to the event queues of all state machines
+			forall i in [1..stateMachineCount()] do
+				enqueue [handleEvent, event] into inputQueue(i)
+			endforall
+		endif
+	endseq
+
+rule StartTimeout(timeout) =
+	seq
+		smPrint("Starting timeout: " + timeout)
+		add timeout to timeoutQueue(self)
+	endseq
+
+rule ResetTimeout(name) =
+	let timeout = getTimeout(name) in
+		remove timeout from timeoutQueue(self)
+
+rule Match(matchParams, isStateScoped) =
+	let value = evaluateExpression(nth(matchParams, 1), isStateScoped), matchCases = nth(matchParams, 2) in
+		// Choose the first match case where the evaluated expression matches its value
+		choose matchCase in matchCases with evaluateExpression(nth(matchCase, 1), isStateScoped) = value do
+			ExecuteAction(nth(matchCase, 2), isStateScoped)
+		endchoose 
+
+rule Create(name, expression, isPersistent, isStateScoped) =
+	let value = evaluateExpression(expression, isStateScoped) in seq
+		smPrint("Create " + name + " = " + value)
+		if isPersistent then
+			add {name -> value} to persistentContext()
+		else
+			if isStateScoped then
+				add {name -> value} to localContextState(self, activeStateName)
+			else
+				add {name -> value} to localContext(self)
+		endif
+	endseq
+
+rule Assign(sm, name, expression, isStateScoped) =
+    let value = evaluateExpression(expression, isStateScoped) in seq
+        smPrint("Assign " + name + " = " + value)
+        
+        // Find the context that has the given variable and overwrite the variable
+        if isStateScoped and localContextState(sm, stateName(activeState(sm)))(name) != undef then
+            add {name -> value} to localContextState(sm, stateName(activeState(sm)))
+        else if isStateScoped and staticContextState(sm, stateName(activeState(sm)))(name) != undef then
+            add {name -> value} to staticContextState(sm, stateName(activeState(sm)))
+        else if localContext(sm)(name) != undef then
+            add {name -> value} to localContext(sm)
+        else if persistentContext()(name) != undef then
+            add {name -> value} to persistentContext()
+        else if parent(sm) != undef then
+        	Assign(parent(sm), name, expression, false)
+        else
+            smPrint("Assign failed. Variable '" + name + "' does not exist.")
+        endif
+    endseq
+
+rule Delete(sm, name, isStateScoped) =
+    par
+        smPrint("Delete " + name)
+        
+        // Find the context that has the given variable and delete the variable
+        if isStateScoped and localContextState(sm, stateName(activeState(sm)))(name) != undef then
+            remove {name -> localContextState(sm, stateName(activeState(sm)))(name)} from localContextState(sm, stateName(activeState(sm)))
+        else if isStateScoped and staticContextState(sm, stateName(activeState(sm)))(name) != undef then
+            remove {name -> staticContextState(sm, stateName(activeState(sm)))(name)} from staticContextState(sm, stateName(activeState(sm)))
+        else if localContext(sm)(name) != undef then
+            remove {name -> localContext(sm)(name)} from localContext(sm)
+        else if persistentContext()(name) != undef then
+            remove {name -> persistentContext()(name)} from persistentContext()
+        else if parent(sm) != undef then
+        	Delete(parent(sm), name, false)
+        else
+            smPrint("Delete failed. Variable '" + name + "' does not exist.")
+        endif
+    endpar
+
+// Debug
+
+rule smPrint(text) = 
+	if activeState(self) = undef then
+		print("[" + name(self) + "]: " + text)
+	else
+		print("[" + name(self) + "@" + stateName(activeState(self)) + "]: " + text)
+
+/* Ugly but could be used to handle service input
+
+derived services = {
+	"service1" -> @SimulateService1
+}
+
+call(services()("service1"))(["service1", false, [["v", [1]]], [["e1", internal, []]], ["v"]])
+
+rule SimulateService1(service) = 
+	HandleServiceResult(service, [["v", 2]])
+*/
